@@ -1,0 +1,68 @@
+name: Build Executables
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:   # allows manual trigger from GitHub UI
+
+jobs:
+
+  # ── Windows .exe ────────────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Build Windows exe
+        run: |
+          pyinstaller --onefile --windowed --name "DBF_Segregator" app.py
+
+      - name: Upload Windows exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: DBF_Segregator_Windows
+          path: dist/DBF_Segregator.exe
+
+
+  # ── Mac .app ────────────────────────────────────────────────────────────
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Build Mac app
+        run: |
+          pyinstaller --onefile --windowed --name "DBF_Segregator" app.py
+
+      - name: Zip Mac app
+        run: |
+          cd dist
+          zip -r DBF_Segregator_Mac.zip DBF_Segregator
+
+      - name: Upload Mac app
+        uses: actions/upload-artifact@v4
+        with:
+          name: DBF_Segregator_Mac
+          path: dist/DBF_Segregator_Mac.zip
