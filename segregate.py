@@ -522,33 +522,45 @@ def process_csv(csv_path: str, pan_org: dict, output_dir: str, folio_product_org
     }
 
     try:
-        # Writers keyed by org name — write CSV per org
-        writers  = {}   # org_name -> file handle + csv.writer
+        # Writers keyed by org name — write raw lines to preserve exact formatting
+        writers  = {}   # org_name -> file handle
         unmatched_writer = [None]
 
         def get_writer(org_name):
             if org_name not in writers:
                 out = output_dir / f"{base_name}_{_safe_name(org_name)}.csv"
-                fh  = open(str(out), "w", newline="", encoding="utf-8-sig")
-                w   = csv_module.writer(fh)
-                writers[org_name] = (fh, w)
+                fh  = open(str(out), "w", newline="", encoding=src_encoding)
+                writers[org_name] = fh
                 summary["outputs"].append(str(out))
-            return writers[org_name][1]
+            return writers[org_name]
 
         def get_unmatched():
             if unmatched_writer[0] is None:
                 out = output_dir / f"{base_name}_UNMATCHED.csv"
-                fh  = open(str(out), "w", newline="", encoding="utf-8-sig")
-                w   = csv_module.writer(fh)
-                unmatched_writer[0] = (fh, w)
+                fh  = open(str(out), "w", newline="", encoding=src_encoding)
+                unmatched_writer[0] = fh
                 summary["outputs"].append(str(out))
-            return unmatched_writer[0][1]
+            return unmatched_writer[0]
 
         NA_VALUES = {"NA", "N/A", "#N/A", "#NA", "NONE", "NULL", "-", ""}
 
-        with open(str(csv_path), "r", encoding="utf-8-sig", errors="replace") as f:
-            reader = csv_module.reader(f)
-            headers = next(reader)
+        # Detect source encoding (preserve original exactly)
+        import chardet
+        with open(str(csv_path), "rb") as rb:
+            raw_bytes = rb.read(65536)
+            detected  = chardet.detect(raw_bytes)
+            src_encoding = detected.get("encoding") or "utf-8"
+            # Strip BOM from encoding name so we don't write BOM to output
+            if src_encoding.lower() in ("utf-8-sig", "utf-8-bom"):
+                src_encoding = "utf-8"
+        log.info(f"[{csv_path.name}] Detected encoding: {src_encoding}")
+
+        with open(str(csv_path), "r", newline="", encoding=src_encoding, errors="replace") as f:
+            # Read header line raw to preserve exact formatting
+            header_line = f.readline()
+            # Strip BOM if present
+            header_line = header_line.lstrip("\ufeff")
+            headers = next(csv_module.reader([header_line]))
 
             # Auto-detect columns
             pan_idx, folio_idx, product_idx = get_csv_column_indices(headers)
@@ -563,26 +575,22 @@ def process_csv(csv_path: str, pan_org: dict, output_dir: str, folio_product_org
                 f"PRODUCT col='{headers[product_idx] if product_idx is not None else 'N/A'}'"
             )
 
-            # Write header row to all output files lazily (written on first data row)
-            header_written = {}
+            # Track which files have had header written
+            header_written = set()
 
-            def ensure_header(org_name, writer):
-                if org_name not in header_written:
-                    writer.writerow(headers)
-                    header_written[org_name] = True
+            def ensure_header(fh, key):
+                if key not in header_written:
+                    fh.write(header_line if header_line.endswith("\n") else header_line + "\n")
+                    header_written.add(key)
 
-            def ensure_unmatched_header(writer):
-                if "_unmatched" not in header_written:
-                    writer.writerow(headers)
-                    header_written["_unmatched"] = True
-
-            for row in reader:
-                if not any(r.strip() for r in row):
+            for raw_line in f:
+                if not raw_line.strip():
                     continue  # skip empty rows
+                row = next(csv_module.reader([raw_line]))
                 summary["total"] += 1
 
-                pan_str  = row[pan_idx].strip().upper() if pan_idx < len(row) else ""
-                org      = None
+                pan_str = row[pan_idx].strip().upper() if pan_idx < len(row) else ""
+                org     = None
 
                 # Step 1: FOLIO+PRODUCT lookup
                 if folio_idx is not None and product_idx is not None and folio_product_org:
@@ -599,24 +607,24 @@ def process_csv(csv_path: str, pan_org: dict, output_dir: str, folio_product_org
                     if org:
                         summary["pan_matched"] = summary.get("pan_matched", 0) + 1
 
-                # Step 3: Write result
+                # Step 3: Write raw line as-is — no reformatting
                 if org:
-                    w = get_writer(org)
-                    ensure_header(org, w)
-                    w.writerow(row)
+                    fh = get_writer(org)
+                    ensure_header(fh, org)
+                    fh.write(raw_line if raw_line.endswith("\n") else raw_line + "\n")
                     summary["matched"] += 1
                     summary["orgs"][org] = summary["orgs"].get(org, 0) + 1
                 else:
-                    w = get_unmatched()
-                    ensure_unmatched_header(w)
-                    w.writerow(row)
+                    fh = get_unmatched()
+                    ensure_header(fh, "_unmatched")
+                    fh.write(raw_line if raw_line.endswith("\n") else raw_line + "\n")
                     summary["unmatched"] += 1
 
         # Close all writers
-        for fh, _ in writers.values():
+        for fh in writers.values():
             fh.close()
         if unmatched_writer[0]:
-            unmatched_writer[0][0].close()
+            unmatched_writer[0].close()
 
     except Exception as exc:
         summary["error"] = str(exc)
