@@ -553,6 +553,9 @@ def process_csv(csv_path: str, pan_org: dict, output_dir: str, folio_product_org
             # Strip BOM from encoding name so we don't write BOM to output
             if src_encoding.lower() in ("utf-8-sig", "utf-8-bom"):
                 src_encoding = "utf-8"
+            # ASCII is a subset of UTF-8 — upgrade to utf-8 to handle special chars
+            if src_encoding.lower() == "ascii":
+                src_encoding = "utf-8"
         log.info(f"[{csv_path.name}] Detected encoding: {src_encoding}")
 
         with open(str(csv_path), "r", newline="", encoding=src_encoding, errors="replace") as f:
