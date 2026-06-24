@@ -35,13 +35,14 @@ class WorkerSignals(QObject):
 
 
 class ProcessWorker(QThread):
-    def __init__(self, master, dbf_files, csv_files, output_dir):
+    def __init__(self, master, dbf_files, csv_files, output_dir, wbr22_files=None):
         super().__init__()
-        self.master     = master
-        self.dbf_files  = dbf_files
-        self.csv_files  = csv_files
-        self.output_dir = output_dir
-        self.signals    = WorkerSignals()
+        self.master      = master
+        self.dbf_files   = dbf_files
+        self.csv_files   = csv_files
+        self.output_dir  = output_dir
+        self.wbr22_files = wbr22_files or set()
+        self.signals     = WorkerSignals()
 
     def run(self):
         try:
@@ -65,7 +66,8 @@ class ProcessWorker(QThread):
                 pct   = 20 + int((i / total_files) * 75)
                 self.signals.progress.emit(pct, f"Processing {fname}...")
                 if ftype == "dbf":
-                    s = process_dbf(p, pan_org, self.output_dir, folio_product_org)
+                    is_wbr22 = p in self.wbr22_files
+                    s = process_dbf(p, pan_org, self.output_dir, folio_product_org, wbr22_mode=is_wbr22)
                 else:
                     s = process_csv(p, pan_org, self.output_dir, folio_product_org)
                 summaries.append(s)
@@ -106,7 +108,7 @@ class ProcessWorker(QThread):
 class FileRow(QFrame):
     removed = pyqtSignal(str)
 
-    def __init__(self, filepath: str, parent=None):
+    def __init__(self, filepath: str, show_wbr22: bool = False, parent=None):
         super().__init__(parent)
         self.filepath = filepath
         self.setFrameShape(QFrame.StyledPanel)
@@ -137,6 +139,23 @@ class FileRow(QFrame):
         size_lbl.setStyleSheet("color: #6C757D; font-size: 10px;")
         layout.addWidget(size_lbl)
 
+        # WBR22 checkbox — only shown for DBF files
+        self.wbr22_chk = None
+        if show_wbr22:
+            from PyQt5.QtWidgets import QCheckBox
+            self.wbr22_chk = QCheckBox("WBR22")
+            self.wbr22_chk.setToolTip("Enable WBR22 mode — FOLIO+PRODUCT only, no PAN fallback")
+            self.wbr22_chk.setStyleSheet("""
+                QCheckBox {
+                    font-size: 10px;
+                    color: #6C757D;
+                    spacing: 4px;
+                }
+                QCheckBox::indicator { width: 14px; height: 14px; }
+                QCheckBox:checked { color: #0D6EFD; font-weight: bold; }
+            """)
+            layout.addWidget(self.wbr22_chk)
+
         btn = QPushButton("✕")
         btn.setFixedSize(24, 24)
         btn.setStyleSheet("""
@@ -150,6 +169,9 @@ class FileRow(QFrame):
         """)
         btn.clicked.connect(lambda: self.removed.emit(self.filepath))
         layout.addWidget(btn)
+
+    def is_wbr22(self) -> bool:
+        return self.wbr22_chk is not None and self.wbr22_chk.isChecked()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -237,7 +259,7 @@ class FileListPanel(QGroupBox):
         for p in paths:
             if p not in self.files:
                 self.files.append(p)
-                row = FileRow(p)
+                row = FileRow(p, show_wbr22=(self.ext_filter == "dbf"))
                 row.removed.connect(self._remove_file)
                 self.list_layout.addWidget(row)
         self._update_count()
@@ -263,6 +285,15 @@ class FileListPanel(QGroupBox):
         n = len(self.files)
         self.count_lbl.setText(f"{n} file{'s' if n != 1 else ''} selected")
         self.empty_lbl.setVisible(n == 0)
+
+    def get_wbr22_files(self) -> set:
+        """Return set of filepaths marked as WBR22."""
+        result = set()
+        for i in range(self.list_layout.count()):
+            w = self.list_layout.itemAt(i).widget()
+            if isinstance(w, FileRow) and w.is_wbr22():
+                result.add(w.filepath)
+        return result
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -449,7 +480,8 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
 
         # Start worker
-        self.worker = ProcessWorker(master, dbf_files, csv_files, output_dir)
+        wbr22_files = self.dbf_panel.get_wbr22_files()
+        self.worker = ProcessWorker(master, dbf_files, csv_files, output_dir, wbr22_files)
         self.worker.signals.progress.connect(self._on_progress)
         self.worker.signals.finished.connect(self._on_finished)
         self.worker.signals.error.connect(self._on_error)
