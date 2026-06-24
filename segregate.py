@@ -37,6 +37,7 @@ log = logging.getLogger("segregator")
 FOLIO_PRODUCT_CANDIDATES = [
     ("FOLIO_NO",      "PRODCODE"),        # DBF1, DBF2
     ("FOLIOCHK",      "PRODUCT"),         # DBF3
+    ("FOLIO",         "PRODUCT"),         # WBR22 DBF
     ("Folio Number",  "Product code"),    # CSV1, CSV2
     ("Folio",         "Product code"),    # CSV3
 ]
@@ -366,7 +367,7 @@ def _safe_name(org: str) -> str:
     return safe[:60]
 
 
-def process_dbf(dbf_path: str, pan_org: dict, output_dir: str, folio_product_org: dict = None) -> dict:
+def process_dbf(dbf_path: str, pan_org: dict, output_dir: str, folio_product_org: dict = None, wbr22_mode: bool = False) -> dict:
     dbf_path   = Path(dbf_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -384,17 +385,19 @@ def process_dbf(dbf_path: str, pan_org: dict, output_dir: str, folio_product_org
             fields, num_records, header_size, record_size = _read_dbf_header(fh)
 
             pan_field = _find_pan_field(fields)
-            if pan_field is None:
+            if pan_field is None and not wbr22_mode:
                 summary["error"] = f"No PAN field found. Fields: {[f.name for f in fields]}"
                 return summary
 
+            if wbr22_mode:
+                log.info(f"[{dbf_path.name}] WBR22 MODE — PAN fallback disabled")
             log.info(
                 f"[{dbf_path.name}] {num_records:,} records | "
-                f"PAN field: '{pan_field.name}' | record size: {record_size}B"
+                f"PAN field: '{pan_field.name if pan_field else 'N/A'}' | record size: {record_size}B"
             )
 
-            pan_start = pan_field.offset
-            pan_end   = pan_start + pan_field.length
+            pan_start = pan_field.offset if pan_field else 0
+            pan_end   = (pan_start + pan_field.length) if pan_field else 0
 
             # ── Auto-detect folio/product fields for blank PAN fallback ─────────
             folio_field, product_field = get_folio_product_fields(fields)
@@ -424,8 +427,11 @@ def process_dbf(dbf_path: str, pan_org: dict, output_dir: str, folio_product_org
             def handle_record(rec_mv):
                 if rec_mv[0] == 0x2A:   # deleted
                     return
-                pan_raw = bytes(rec_mv[1 + pan_start : 1 + pan_end])
-                pan_str = pan_raw.decode('ascii', errors='replace').strip().upper()
+                if pan_field:
+                    pan_raw = bytes(rec_mv[1 + pan_start : 1 + pan_end])
+                    pan_str = pan_raw.decode('ascii', errors='replace').strip().upper()
+                else:
+                    pan_str = ""
                 record_data = bytes(rec_mv[1:])
                 summary["total"] += 1
 
@@ -443,7 +449,8 @@ def process_dbf(dbf_path: str, pan_org: dict, output_dir: str, folio_product_org
                         summary["fp_matched"] = summary.get("fp_matched", 0) + 1
 
                 # ── Step 2: Fallback to PAN if FOLIO+PRODUCT didn't match ────
-                if org is None and pan_str:
+                # Skipped for WBR22 format — no PAN column in these files
+                if org is None and not wbr22_mode and pan_str:
                     org = pan_org.get(pan_str)
                     if org:
                         summary["pan_matched"] = summary.get("pan_matched", 0) + 1
