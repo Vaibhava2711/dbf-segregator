@@ -35,11 +35,17 @@ from segregate import load_pan_org_map, process_dbf, process_csv
 
 # ── Load config.json ─────────────────────────────────────────────────────────
 def load_config() -> dict:
-    """Load config.json from same directory as app.py."""
-    config_path = Path(__file__).parent / "config.json"
+    """Load config.json from same directory as exe or script."""
+    import json
+    # When running as PyInstaller exe, use the exe's directory
+    # When running as script, use the script's directory
+    if getattr(sys, 'frozen', False):
+        base_dir = Path(sys.executable).parent
+    else:
+        base_dir = Path(__file__).parent
+    config_path = base_dir / "config.json"
     if config_path.exists():
         try:
-            import json
             with open(config_path) as f:
                 return json.load(f)
         except Exception:
@@ -477,7 +483,7 @@ class EmailPreviewDialog(QDialog):
         layout.addWidget(sub)
 
         # Gmail credentials
-        cred_group = QGroupBox("Gmail Credentials")
+        cred_group = QGroupBox("SMTP Credentials")
         cred_group.setFont(QFont("Segoe UI", 10, QFont.Bold))
         cred_group.setStyleSheet("""
             QGroupBox {
