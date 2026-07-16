@@ -451,6 +451,176 @@ def send_org_email(smtp_host: str, smtp_port: int, smtp_user: str, smtp_pass: st
 
 
 # ════════════════════════════════════════════════════════════════════════════
+#  FILE SELECTION DIALOG
+# ════════════════════════════════════════════════════════════════════════════
+
+class FileSelectDialog(QDialog):
+    def __init__(self, org_name: str, files: list, selected_files: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Select Files — {org_name}")
+        self.setMinimumSize(680, 500)
+        self.resize(720, 560)
+        self.setSizeGripEnabled(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+
+        # Header
+        hdr = QLabel(f"📎  Select files to send for {org_name}")
+        hdr.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        hdr.setStyleSheet("color: #212529;")
+        layout.addWidget(hdr)
+
+        sub = QLabel(f"{len(files)} file(s) available — uncheck any you don't want to attach")
+        sub.setStyleSheet("color: #6C757D; font-size: 11px;")
+        layout.addWidget(sub)
+
+        # Divider
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("color: #DEE2E6;")
+        layout.addWidget(line)
+
+        # Select all / none buttons
+        btn_row = QHBoxLayout()
+        sel_all = QPushButton("✓  Select All")
+        sel_all.setFixedHeight(32)
+        sel_all.setStyleSheet("""
+            QPushButton { background: #0D6EFD; color: white; border: none;
+                          border-radius: 6px; padding: 0 16px; font-size: 11px; }
+            QPushButton:hover { background: #0B5ED7; }
+        """)
+        sel_none = QPushButton("✗  Select None")
+        sel_none.setFixedHeight(32)
+        sel_none.setStyleSheet("""
+            QPushButton { background: #6C757D; color: white; border: none;
+                          border-radius: 6px; padding: 0 16px; font-size: 11px; }
+            QPushButton:hover { background: #5C636A; }
+        """)
+        self.count_lbl = QLabel()
+        self.count_lbl.setStyleSheet("color: #495057; font-size: 11px;")
+        btn_row.addWidget(sel_all)
+        btn_row.addWidget(sel_none)
+        btn_row.addStretch()
+        btn_row.addWidget(self.count_lbl)
+        layout.addLayout(btn_row)
+
+        # File list in scroll area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("""
+            QScrollArea { border: 1.5px solid #CED4DA; border-radius: 8px; background: #FFFFFF; }
+        """)
+        inner = QWidget()
+        inner.setStyleSheet("background: #FFFFFF;")
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(12, 12, 12, 12)
+        inner_layout.setSpacing(4)
+        inner_layout.setAlignment(Qt.AlignTop)
+
+        self.checkboxes = {}
+        for i, fpath in enumerate(files):
+            # Alternating row background
+            row_widget = QFrame()
+            row_widget.setStyleSheet(
+                "QFrame { background: #F8F9FA; border-radius: 6px; }" if i % 2 == 0
+                else "QFrame { background: #FFFFFF; border-radius: 6px; }"
+            )
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(12, 8, 12, 8)
+
+            chk = QCheckBox()
+            chk.setChecked(fpath in selected_files)
+            chk.setStyleSheet("QCheckBox::indicator { width: 16px; height: 16px; }")
+            chk.stateChanged.connect(self._update_count)
+            row_layout.addWidget(chk)
+
+            # File icon based on extension
+            ext  = Path(fpath).suffix.lower()
+            icon = "🗄" if ext == ".dbf" else "📊" if ext == ".csv" else "📄"
+            icon_lbl = QLabel(icon)
+            icon_lbl.setFixedWidth(24)
+            icon_lbl.setStyleSheet("font-size: 14px;")
+            row_layout.addWidget(icon_lbl)
+
+            name_lbl = QLabel(Path(fpath).name)
+            name_lbl.setFont(QFont("Segoe UI", 10))
+            name_lbl.setStyleSheet("color: #212529;")
+            name_lbl.setToolTip(fpath)
+            row_layout.addWidget(name_lbl, 1)
+
+            # File size
+            try:
+                sz = Path(fpath).stat().st_size
+                sz_str = f"{sz/1024/1024:.1f} MB" if sz > 1048576 else f"{sz/1024:.1f} KB"
+            except:
+                sz_str = ""
+            sz_lbl = QLabel(sz_str)
+            sz_lbl.setStyleSheet("color: #ADB5BD; font-size: 10px;")
+            row_layout.addWidget(sz_lbl)
+
+            # Ext badge
+            badge = QLabel(ext.upper().lstrip("."))
+            badge.setStyleSheet(
+                "background: #0D6EFD; color: white; border-radius: 4px; padding: 1px 6px; font-size: 9px;"
+                if ext == ".dbf" else
+                "background: #198754; color: white; border-radius: 4px; padding: 1px 6px; font-size: 9px;"
+            )
+            row_layout.addWidget(badge)
+
+            inner_layout.addWidget(row_widget)
+            self.checkboxes[fpath] = chk
+
+        scroll.setWidget(inner)
+        layout.addWidget(scroll, 1)
+
+        sel_all.clicked.connect(lambda: [c.setChecked(True) for c in self.checkboxes.values()])
+        sel_none.clicked.connect(lambda: [c.setChecked(False) for c in self.checkboxes.values()])
+        self._update_count()
+
+        # Divider
+        line2 = QFrame()
+        line2.setFrameShape(QFrame.HLine)
+        line2.setStyleSheet("color: #DEE2E6;")
+        layout.addWidget(line2)
+
+        # OK / Cancel
+        btn_box = QHBoxLayout()
+        btn_box.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setFixedHeight(36)
+        cancel_btn.setStyleSheet("""
+            QPushButton { background: #F8F9FA; color: #495057; border: 1px solid #CED4DA;
+                          border-radius: 6px; padding: 0 20px; font-size: 11px; }
+            QPushButton:hover { background: #E9ECEF; }
+        """)
+        cancel_btn.clicked.connect(self.reject)
+
+        ok_btn = QPushButton("✓  Confirm Selection")
+        ok_btn.setFixedHeight(36)
+        ok_btn.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        ok_btn.setStyleSheet("""
+            QPushButton { background: #198754; color: white; border: none;
+                          border-radius: 6px; padding: 0 24px; font-size: 11px; }
+            QPushButton:hover { background: #157347; }
+        """)
+        ok_btn.clicked.connect(self.accept)
+
+        btn_box.addWidget(cancel_btn)
+        btn_box.addWidget(ok_btn)
+        layout.addLayout(btn_box)
+
+    def _update_count(self):
+        selected = sum(1 for c in self.checkboxes.values() if c.isChecked())
+        total    = len(self.checkboxes)
+        self.count_lbl.setText(f"{selected} of {total} selected")
+
+    def get_selected_files(self) -> list:
+        return [f for f, chk in self.checkboxes.items() if chk.isChecked()]
+
+
+# ════════════════════════════════════════════════════════════════════════════
 #  EMAIL PREVIEW DIALOG
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -555,8 +725,17 @@ class EmailPreviewDialog(QDialog):
         """)
 
         all_orgs = sorted(org_files.keys())
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Send", "Organisation", "Email(s)", "Files", "Select"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.table.setRowCount(len(all_orgs))
         self.row_checks = {}
+        # Store selected files per org — default all selected
+        self.selected_files = {org: list(org_files.get(org, [])) for org in all_orgs}
 
         for r, org in enumerate(all_orgs):
             # Checkbox
@@ -582,12 +761,18 @@ class EmailPreviewDialog(QDialog):
                 email_item.setForeground(QColor("#DC3545"))
             self.table.setItem(r, 2, email_item)
 
-            # File count
-            fcount = len(org_files.get(org, []))
-            fc_item = QTableWidgetItem(f"{fcount} file{'s' if fcount != 1 else ''}")
-            fc_item.setFlags(fc_item.flags() & ~Qt.ItemIsEditable)
-            fc_item.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(r, 3, fc_item)
+            # File count label
+            self._update_file_count_cell(r, org)
+
+            # Select Files button
+            sel_btn = QPushButton("📎 Select Files")
+            sel_btn.setStyleSheet("""
+                QPushButton { background: #F8F9FA; border: 1px solid #CED4DA; border-radius: 4px;
+                              padding: 3px 8px; font-size: 10px; color: #495057; }
+                QPushButton:hover { background: #E9ECEF; }
+            """)
+            sel_btn.clicked.connect(lambda checked, o=org, row=r: self._select_files(o, row))
+            self.table.setCellWidget(r, 4, sel_btn)
 
         self.all_orgs = all_orgs
         layout.addWidget(self.table)
@@ -632,6 +817,29 @@ class EmailPreviewDialog(QDialog):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
+    def _update_file_count_cell(self, row: int, org: str):
+        """Update the file count cell to reflect current selection."""
+        total   = len(self.org_files.get(org, []))
+        selected = len(self.selected_files.get(org, []))
+        text = f"{selected}/{total} files"
+        fc_item = QTableWidgetItem(text)
+        fc_item.setFlags(fc_item.flags() & ~Qt.ItemIsEditable)
+        fc_item.setTextAlignment(Qt.AlignCenter)
+        if selected < total:
+            fc_item.setForeground(QColor("#FD7E14"))  # orange when partially selected
+        else:
+            fc_item.setForeground(QColor("#198754"))  # green when all selected
+        self.table.setItem(row, 3, fc_item)
+
+    def _select_files(self, org: str, row: int):
+        """Open file selection dialog for an org."""
+        all_files      = self.org_files.get(org, [])
+        current_sel    = self.selected_files.get(org, all_files)
+        dlg = FileSelectDialog(org, all_files, current_sel, self)
+        if dlg.exec_() == QDialog.Accepted:
+            self.selected_files[org] = dlg.get_selected_files()
+            self._update_file_count_cell(row, org)
+
     def _input_style(self):
         return """
             QLineEdit {
@@ -661,7 +869,7 @@ class EmailPreviewDialog(QDialog):
             emails = [e.strip() for e in email_item.text().split(",") if e.strip() and "@" in e]
             if not emails:
                 continue
-            to_send.append((org, emails, self.org_files.get(org, [])))
+            to_send.append((org, emails, self.selected_files.get(org, self.org_files.get(org, []))))
 
         if not to_send:
             QMessageBox.warning(self, "Nothing to Send", "No orgs selected or no valid email addresses found.")
