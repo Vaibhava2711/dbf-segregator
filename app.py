@@ -392,9 +392,168 @@ def find_org_emails(org_name: str, org_email_map: dict) -> list:
     return []
 
 
+# ── Org-specific format rules (hardcoded) ────────────────────────────────────
+# Wealth Managers → all files converted to Excel (.xlsx) for email
+# Mitraz          → CSV files converted to DBF for email
+EXCEL_ORGS  = {"wealth managers"}   # lowercase for case-insensitive match
+DBF_CSV_ORGS = {"mitraz"}           # lowercase for case-insensitive match
+
+
+def convert_to_excel(src_path: str, tmp_dir: str) -> str:
+    """Convert a DBF or CSV file to Excel (.xlsx). Returns path to new file."""
+    import openpyxl
+    src  = Path(src_path)
+    out  = Path(tmp_dir) / (src.stem + ".xlsx")
+    wb   = openpyxl.Workbook()
+    ws   = wb.active
+
+    if src.suffix.lower() == ".csv":
+        import csv as csv_mod
+        import chardet
+        with open(src, "rb") as rb:
+            enc = chardet.detect(rb.read(65536)).get("encoding") or "utf-8"
+            if enc.lower() in ("ascii", "utf-8-sig", "utf-8-bom"):
+                enc = "utf-8"
+        with open(src, "r", encoding=enc, errors="replace", newline="") as f:
+            for row in csv_mod.reader(f):
+                ws.append(row)
+    elif src.suffix.lower() == ".dbf":
+        # Read DBF using our parser
+        from segregate import _read_dbf_header, _find_pan_field
+        with open(src, "rb") as fh:
+            fields, num_records, header_size, record_size = _read_dbf_header(fh)
+            # Write header
+            ws.append([f.name for f in fields])
+            # Write records
+            raw = fh.read()
+            mv  = memoryview(raw)
+            n   = len(raw) // record_size
+            dec = __import__("codecs").getdecoder("ascii")
+            for i in range(n):
+                rec = mv[i * record_size:(i + 1) * record_size]
+                if rec[0] == 0x2A:
+                    continue
+                row = []
+                for f in fields:
+                    val = bytes(rec[1 + f.offset: 1 + f.offset + f.length]).decode("ascii", errors="replace").strip()
+                    row.append(val)
+                ws.append(row)
+    wb.save(str(out))
+    return str(out)
+
+
+def convert_csv_to_dbf(src_path: str, tmp_dir: str) -> str:
+    """Convert a CSV file to DBF format. Returns path to new file."""
+    import csv as csv_mod
+    import chardet
+    import struct
+    from datetime import date
+
+    src = Path(src_path)
+    out = Path(tmp_dir) / (src.stem + ".dbf")
+
+    # Detect encoding
+    with open(src, "rb") as rb:
+        enc = chardet.detect(rb.read(65536)).get("encoding") or "utf-8"
+        if enc.lower() in ("ascii", "utf-8-sig", "utf-8-bom"):
+            enc = "utf-8"
+
+    with open(src, "r", encoding=enc, errors="replace", newline="") as f:
+        reader = csv_mod.reader(f)
+        headers = next(reader)
+        rows    = list(reader)
+
+    if not rows:
+        return src_path  # nothing to convert
+
+    # Set all fields to 254 (DBF maximum) to prevent any truncation risk
+    field_lengths = [254] * len(headers)
+
+    # Build DBF
+    FIELD_SIZE = 32
+    num_fields  = len(headers)
+    header_size = 32 + num_fields * FIELD_SIZE + 1
+    record_size = 1 + sum(field_lengths)
+
+    buf = bytearray(header_size + len(rows) * record_size + 1)
+    today = date.today()
+    struct.pack_into("<BBBBIHH20x", buf, 0,
+        3, today.year - 1900, today.month, today.day,
+        len(rows), header_size, record_size)
+
+    enc_fn = lambda s: s.encode("ascii", errors="replace")
+    off = 32
+    for i, h in enumerate(headers):
+        name_b = enc_fn(h[:10].ljust(11, ""))[:11]
+        buf[off:off+11] = name_b
+        buf[off+11] = ord("C")
+        buf[off+16] = field_lengths[i]
+        off += FIELD_SIZE
+    buf[off] = 0x0D
+
+    roff = header_size
+    for row in rows:
+        buf[roff] = 0x20
+        foff = roff + 1
+        for i, fl in enumerate(field_lengths):
+            val = str(row[i]).strip()[:fl] if i < len(row) else ""
+            val_b = enc_fn(val.ljust(fl))[:fl]
+            buf[foff:foff+fl] = val_b
+            foff += fl
+        roff += record_size
+    buf[roff] = 0x1A
+
+    with open(out, "wb") as f:
+        f.write(buf)
+    return str(out)
+
+
+def get_org_for_file(fpath: str, org_files: dict) -> str:
+    """Find which org a file belongs to by matching filename."""
+    fname = Path(fpath).name
+    for org, files in org_files.items():
+        if any(Path(f).name == fname for f in files):
+            return org
+    return ""
+
+
+def prepare_attachments(org_name: str, files: list, org_files: dict = None) -> tuple:
+    """
+    Convert files based on org-specific rules — per file basis.
+    Each file is converted based on the org it belongs to, not the combined org name.
+    Returns (attachment_paths, tmp_dir_to_cleanup)
+    """
+    import tempfile
+    tmp_dir   = tempfile.mkdtemp()
+    converted = []
+    used_tmp  = False
+
+    for fpath in files:
+        # Find which org this specific file belongs to
+        file_org = get_org_for_file(fpath, org_files or {}).lower().strip()
+
+        if any(file_org == o.lower().strip() for o in EXCEL_ORGS):
+            # Convert this file to Excel
+            converted.append(convert_to_excel(fpath, tmp_dir))
+            used_tmp = True
+
+        elif any(file_org == o.lower().strip() for o in DBF_CSV_ORGS):
+            # Convert CSV to DBF, keep DBF as-is
+            if Path(fpath).suffix.lower() == ".csv":
+                converted.append(convert_csv_to_dbf(fpath, tmp_dir))
+                used_tmp = True
+            else:
+                converted.append(fpath)
+        else:
+            # No conversion needed
+            converted.append(fpath)
+
+    return converted, tmp_dir if used_tmp else None
+
+
 def send_org_email(smtp_host: str, smtp_port: int, smtp_user: str, smtp_pass: str,
                    from_email: str, to_emails: list,
-                   org_name: str, files: list) -> str:
+                   org_name: str, files: list, org_files: dict = None) -> str:
     """
     Send one email to org with all files attached via direct SMTP.
     Returns "" on success or error message string.
@@ -422,7 +581,11 @@ def send_org_email(smtp_host: str, smtp_port: int, smtp_user: str, smtp_pass: st
         )
         msg.attach(MIMEText(body, "plain"))
 
-        for fpath in files:
+        # Convert files based on org-specific rules
+        import shutil
+        attach_files, tmp_dir = prepare_attachments(org_name, files, org_files)
+
+        for fpath in attach_files:
             with open(fpath, "rb") as f:
                 part = MIMEBase("application", "octet-stream")
                 part.set_payload(f.read())
@@ -445,8 +608,17 @@ def send_org_email(smtp_host: str, smtp_port: int, smtp_user: str, smtp_pass: st
                 server.starttls(context=ctx)
                 server.login(smtp_user, smtp_pass)
                 server.sendmail(from_email, to_emails + [CC_EMAIL], msg.as_string())
+        # Cleanup temp files if any
+        if tmp_dir and Path(tmp_dir).exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
         return ""
     except Exception as e:
+        # Cleanup on error too
+        try:
+            if 'tmp_dir' in locals() and tmp_dir and Path(tmp_dir).exists():
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+        except:
+            pass
         return str(e)
 
 
@@ -895,7 +1067,7 @@ class EmailPreviewDialog(QDialog):
             org_label = " & ".join(group["orgs"])
             self.status_lbl.setText(f"Sending to {org_label}...")
             QApplication.processEvents()
-            err = send_org_email(smtp_host, smtp_port, smtp_user, smtp_pass, from_email, group["emails"], org_label, group["files"])
+            err = send_org_email(smtp_host, smtp_port, smtp_user, smtp_pass, from_email, group["emails"], org_label, group["files"], self.org_files)
             if err:
                 errors.append(f"{org_label}: {err}")
             self.send_progress.setValue(i + 1)
