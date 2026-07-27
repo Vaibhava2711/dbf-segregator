@@ -400,12 +400,21 @@ DBF_CSV_ORGS = {"mitraz"}           # lowercase for case-insensitive match
 
 
 def convert_to_excel(src_path: str, tmp_dir: str) -> str:
-    """Convert a DBF or CSV file to Excel (.xlsx). Returns path to new file."""
+    """Convert a DBF or CSV file to Excel (.xlsx). Returns path to new file.
+    All cells written as explicit text to prevent Excel auto-formatting dates/numbers."""
     import openpyxl
+    from openpyxl.styles import numbers as xl_numbers
     src  = Path(src_path)
     out  = Path(tmp_dir) / (src.stem + ".xlsx")
     wb   = openpyxl.Workbook()
     ws   = wb.active
+
+    def write_row_as_text(ws, values):
+        """Write a row with all cells forced to text format."""
+        row_idx = ws.max_row + 1
+        for col_idx, val in enumerate(values, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=str(val) if val is not None else "")
+            cell.number_format = "@"  # "@" = text format in Excel — prevents auto-formatting
 
     if src.suffix.lower() == ".csv":
         import csv as csv_mod
@@ -416,19 +425,16 @@ def convert_to_excel(src_path: str, tmp_dir: str) -> str:
                 enc = "utf-8"
         with open(src, "r", encoding=enc, errors="replace", newline="") as f:
             for row in csv_mod.reader(f):
-                ws.append(row)
+                write_row_as_text(ws, row)
+
     elif src.suffix.lower() == ".dbf":
-        # Read DBF using our parser
-        from segregate import _read_dbf_header, _find_pan_field
+        from segregate import _read_dbf_header
         with open(src, "rb") as fh:
             fields, num_records, header_size, record_size = _read_dbf_header(fh)
-            # Write header
-            ws.append([f.name for f in fields])
-            # Write records
+            write_row_as_text(ws, [f.name for f in fields])
             raw = fh.read()
             mv  = memoryview(raw)
             n   = len(raw) // record_size
-            dec = __import__("codecs").getdecoder("ascii")
             for i in range(n):
                 rec = mv[i * record_size:(i + 1) * record_size]
                 if rec[0] == 0x2A:
@@ -437,7 +443,8 @@ def convert_to_excel(src_path: str, tmp_dir: str) -> str:
                 for f in fields:
                     val = bytes(rec[1 + f.offset: 1 + f.offset + f.length]).decode("ascii", errors="replace").strip()
                     row.append(val)
-                ws.append(row)
+                write_row_as_text(ws, row)
+
     wb.save(str(out))
     return str(out)
 
