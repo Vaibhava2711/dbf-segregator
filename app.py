@@ -497,7 +497,12 @@ def convert_csv_to_dbf(src_path: str, tmp_dir: str) -> str:
         foff = roff + 1
         for i, fl in enumerate(field_lengths):
             val = str(row[i]).strip()[:fl] if i < len(row) else ""
-            val_b = enc_fn(val.ljust(fl))[:fl]
+            val_padded = val[:fl].ljust(fl)
+            val_b = enc_fn(val_padded)[:fl]
+            # Ensure exact length
+            if len(val_b) < fl:
+                val_b = val_b + b' ' * (fl - len(val_b))
+            val_b = val_b[:fl]
             buf[foff:foff+fl] = val_b
             foff += fl
         roff += record_size
