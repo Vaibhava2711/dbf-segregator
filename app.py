@@ -400,38 +400,40 @@ DBF_CSV_ORGS = {"mitraz"}           # lowercase for case-insensitive match
 
 
 def convert_to_excel(src_path: str, tmp_dir: str) -> str:
-    """Convert a DBF or CSV file to Excel (.xlsx). Returns path to new file.
-    All cells written as explicit text to prevent Excel auto-formatting dates/numbers."""
+    """Convert DBF or CSV to Excel. All cells forced to text to prevent auto-formatting."""
     import openpyxl
-    from openpyxl.styles import numbers as xl_numbers
-    src  = Path(src_path)
-    out  = Path(tmp_dir) / (src.stem + ".xlsx")
-    wb   = openpyxl.Workbook()
-    ws   = wb.active
+    import csv as csv_mod
+    import chardet
 
-    def write_row_as_text(ws, values):
-        """Write a row with all cells forced to text format."""
+    src = Path(src_path)
+    out = Path(tmp_dir) / (src.stem + ".xlsx")
+    wb  = openpyxl.Workbook()
+    ws  = wb.active
+
+    def append_text_row(ws, values):
+        from openpyxl.cell.cell import TYPE_STRING
         row_idx = ws.max_row + 1
-        for col_idx, val in enumerate(values, 1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=str(val) if val is not None else "")
-            cell.number_format = "@"  # "@" = text format in Excel — prevents auto-formatting
+        for col_idx, v in enumerate(values, 1):
+            val = "" if v is None else str(v)
+            cell = ws.cell(row=row_idx, column=col_idx)
+            cell.value = val
+            cell.number_format = "@"   # text format
+            cell.data_type = "s"       # force string data type — prevents date/number inference
 
     if src.suffix.lower() == ".csv":
-        import csv as csv_mod
-        import chardet
         with open(src, "rb") as rb:
             enc = chardet.detect(rb.read(65536)).get("encoding") or "utf-8"
             if enc.lower() in ("ascii", "utf-8-sig", "utf-8-bom"):
                 enc = "utf-8"
         with open(src, "r", encoding=enc, errors="replace", newline="") as f:
             for row in csv_mod.reader(f):
-                write_row_as_text(ws, row)
+                append_text_row(ws, row)
 
     elif src.suffix.lower() == ".dbf":
         from segregate import _read_dbf_header
         with open(src, "rb") as fh:
             fields, num_records, header_size, record_size = _read_dbf_header(fh)
-            write_row_as_text(ws, [f.name for f in fields])
+            append_text_row(ws, [f.name for f in fields])
             raw = fh.read()
             mv  = memoryview(raw)
             n   = len(raw) // record_size
@@ -441,14 +443,15 @@ def convert_to_excel(src_path: str, tmp_dir: str) -> str:
                     continue
                 row = []
                 for f in fields:
-                    val = bytes(rec[1 + f.offset: 1 + f.offset + f.length]).decode("ascii", errors="replace").strip()
+                    val = bytes(rec[1 + f.offset:1 + f.offset + f.length]).decode("ascii", errors="replace").strip()
+                    # Convert date fields from YYYYMMDD to DD-MM-YYYY
+                    if f.type == "D" and len(val) == 8 and val.isdigit():
+                        val = f"{val[6:8]}-{val[4:6]}-{val[0:4]}"
                     row.append(val)
-                write_row_as_text(ws, row)
+                append_text_row(ws, row)
 
     wb.save(str(out))
     return str(out)
-
-
 def convert_csv_to_dbf(src_path: str, tmp_dir: str) -> str:
     """Convert a CSV file to DBF format. Returns path to new file."""
     import csv as csv_mod
@@ -459,7 +462,6 @@ def convert_csv_to_dbf(src_path: str, tmp_dir: str) -> str:
     src = Path(src_path)
     out = Path(tmp_dir) / (src.stem + ".dbf")
 
-    # Detect encoding
     with open(src, "rb") as rb:
         enc = chardet.detect(rb.read(65536)).get("encoding") or "utf-8"
         if enc.lower() in ("ascii", "utf-8-sig", "utf-8-bom"):
@@ -471,30 +473,27 @@ def convert_csv_to_dbf(src_path: str, tmp_dir: str) -> str:
         rows    = list(reader)
 
     if not rows:
-        return src_path  # nothing to convert
+        return src_path
 
-    # Set all fields to 254 (DBF maximum) to prevent any truncation risk
-    field_lengths = [254] * len(headers)
-
-    # Build DBF
-    FIELD_SIZE = 32
+    FL          = 254
+    FIELD_SIZE  = 32
     num_fields  = len(headers)
     header_size = 32 + num_fields * FIELD_SIZE + 1
-    record_size = 1 + sum(field_lengths)
+    record_size = 1 + FL * num_fields
 
-    buf = bytearray(header_size + len(rows) * record_size + 1)
+    buf   = bytearray(header_size + len(rows) * record_size + 1)
     today = date.today()
     struct.pack_into("<BBBBIHH20x", buf, 0,
         3, today.year - 1900, today.month, today.day,
         len(rows), header_size, record_size)
 
-    enc_fn = lambda s: s.encode("ascii", errors="replace")
     off = 32
-    for i, h in enumerate(headers):
-        name_b = enc_fn(h[:10].ljust(11, ""))[:11]
-        buf[off:off+11] = name_b
-        buf[off+11] = ord("C")
-        buf[off+16] = field_lengths[i]
+    for h in headers:
+        name_b = h[:10].encode("ascii", errors="replace")
+        name_b = name_b + b"\x00" * (11 - len(name_b))
+        buf[off:off+11] = name_b[:11]
+        buf[off+11]     = ord("C")
+        buf[off+16]     = FL
         off += FIELD_SIZE
     buf[off] = 0x0D
 
@@ -502,24 +501,18 @@ def convert_csv_to_dbf(src_path: str, tmp_dir: str) -> str:
     for row in rows:
         buf[roff] = 0x20
         foff = roff + 1
-        for i, fl in enumerate(field_lengths):
-            val = str(row[i]).strip()[:fl] if i < len(row) else ""
-            val_padded = val[:fl].ljust(fl)
-            val_b = enc_fn(val_padded)[:fl]
-            # Ensure exact length
-            if len(val_b) < fl:
-                val_b = val_b + b' ' * (fl - len(val_b))
-            val_b = val_b[:fl]
-            buf[foff:foff+fl] = val_b
-            foff += fl
+        for i in range(num_fields):
+            val_str   = str(row[i]).strip() if i < len(row) else ""
+            val_bytes = val_str.encode("ascii", errors="replace")[:FL]
+            pad_len   = FL - len(val_bytes)
+            buf[foff:foff+FL] = val_bytes + b" " * pad_len
+            foff += FL
         roff += record_size
     buf[roff] = 0x1A
 
     with open(out, "wb") as f:
         f.write(buf)
     return str(out)
-
-
 def get_org_for_file(fpath: str, org_files: dict) -> str:
     """Find which org a file belongs to by matching filename."""
     fname = Path(fpath).name
