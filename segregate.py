@@ -36,6 +36,7 @@ log = logging.getLogger("segregator")
 # ════════════════════════════════════════════════════════════════════════════
 FOLIO_PRODUCT_CANDIDATES = [
     ("FOLIO_NO",      "PRODCODE"),        # DBF1, DBF2
+    ("FOLIO_NO",      "PRODUCT"),
     ("FOLIOCHK",      "PRODUCT"),         # DBF3
     ("FOLIO",         "PRODUCT"),         # WBR22 DBF
     ("Folio Number",  "Product code"),    # CSV1, CSV2
